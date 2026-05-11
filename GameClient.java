@@ -38,7 +38,7 @@ public class GameClient extends JFrame {
 
     private void setupGUI() {
         setTitle("Bulls & Cows");
-        setSize(430, 700);
+        setSize(430, 600);
         setDefaultCloseOperation(EXIT_ON_CLOSE);
         setLocationRelativeTo(null);
 
@@ -278,32 +278,37 @@ public class GameClient extends JFrame {
                     isOwner = true;
                     revealedSecrets.clear(); finalRankings.clear();
                     roomPanel.setRoomInfo("Phòng: " + currentRoom + " (Chủ phòng)");
+                    roomPanel.setHostDisplay(nickname); // "HOST: mình"
                     roomPanel.clearChat();
                     roomPanel.resetForNewGame();
-                    roomPanel.setStartEnabled(true);
                     roomPanel.setSecretEnabled(false);
                     roomPanel.setGuessEnabled(false);
                     myTurn = false;
-                    roomPanel.setTurnText("Chờ người chơi...");
+                    roomPanel.setTurnText("Chờ người chơi vào phòng...");
                     showChatBubble(true);
                     cardLayout.show(mainPanel, "room");
+                    roomPanel.showReadyDialog(true, numDigits);
                     break;
 
                 case "ROOM_JOINED":
                     if (parts.length >= 3) {
                         currentRoom = parts[1];
                         if (!isOwner) {
+                            // Lấy owner từ danh sách — người đầu tiên
+                            String[] playerList = parts[2].split(",");
+                            String hostNick = playerList.length > 0 ? playerList[0] : "Host";
                             revealedSecrets.clear(); finalRankings.clear();
                             roomPanel.setRoomInfo("Phòng: " + currentRoom);
+                            roomPanel.setHostDisplay(hostNick);
                             roomPanel.clearChat();
                             roomPanel.resetForNewGame();
-                            roomPanel.setStartEnabled(false);
                             roomPanel.setSecretEnabled(false);
                             roomPanel.setGuessEnabled(false);
                             myTurn = false;
-                            roomPanel.setTurnText("Chờ bắt đầu...");
+                            roomPanel.setTurnText("Chờ host bắt đầu game...");
                             showChatBubble(true);
                             cardLayout.show(mainPanel, "room");
+                            roomPanel.showReadyDialog(false, numDigits);
                         }
                     }
                     break;
@@ -346,19 +351,31 @@ public class GameClient extends JFrame {
                         numDigits = Integer.parseInt(parts[1].trim());
                         roomPanel.setNumDigits(numDigits);
                     }
+                    roomPanel.closeReadyDialog(); // đóng dialog sẵn sàng
                     roomPanel.resetForNewGame();
-                    roomPanel.setStartEnabled(false);
-                    roomPanel.setSecretEnabled(true);
-                    roomPanel.setSecretEditable(true);   // mở lại field bị lock từ ván trước
                     roomPanel.setGuessEnabled(false);
                     roomPanel.setChatEnabled(true);
-                    roomPanel.setTurnText("Đặt số bí mật!");
+                    roomPanel.setTurnText("Chờ lượt...");
+                    break;
+
+                case "READY_UPDATE":
+                    if (parts.length >= 3) {
+                        try {
+                            int rc = Integer.parseInt(parts[1].trim());
+                            int tc = Integer.parseInt(parts[2].trim());
+                            roomPanel.updateReadyStatus(rc, tc);
+                        } catch (Exception ignored) {}
+                    }
+                    break;
+
+                case "PLAYER_READY_NOTIFY":
+                    // Server thông báo ai vừa sẵn sàng → hiện toast 3s
+                    if (parts.length >= 2) roomPanel.showReadyToast(parts[1]);
                     break;
 
                 case "SECRET_SET":
-                    roomPanel.setSecretEnabled(false);
-                    roomPanel.setSecretEditable(false);
-                    roomPanel.setTurnText("Chờ người khác đặt số...");
+                    // Server xác nhận số — chỉ cập nhật hiển thị, KHÔNG đóng dialog
+                    if (parts.length >= 2) roomPanel.setMySecretDisplay(parts[1]);
                     break;
 
                 case "YOUR_TURN":

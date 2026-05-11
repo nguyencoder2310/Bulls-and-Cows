@@ -319,42 +319,70 @@ public class GameServer extends JFrame {
     }
 
 
+    private synchronized void handlePlayerReady(ClientHandler client) {
+        if (client.currentRoom == null || client.nickname == null) return;
+        Room room = rooms.get(client.currentRoom);
+        if (room == null || room.gameStarted) return;
+        room.readyPlayers.add(client.nickname);
+        broadcastToRoom(client.currentRoom, "PLAYER_READY_NOTIFY|" + client.nickname);
+        // Đếm tất cả người (kể cả host)
+        int total = room.players.size();
+        int readyCount = room.readyPlayers.size();
+        broadcastToRoom(client.currentRoom, "READY_UPDATE|" + readyCount + "|" + total);
+    }
+
+    private synchronized void handlePlayerUnready(ClientHandler client) {
+        if (client.currentRoom == null || client.nickname == null) return;
+        Room room = rooms.get(client.currentRoom);
+        if (room == null || room.gameStarted) return;
+        room.readyPlayers.remove(client.nickname);
+        int total = room.players.size();
+        int readyCount = room.readyPlayers.size();
+        broadcastToRoom(client.currentRoom, "READY_UPDATE|" + readyCount + "|" + total);
+    }
+
     private synchronized void handleStartGame(ClientHandler client) {
         if (client.currentRoom == null) return;
         Room room = rooms.get(client.currentRoom);
         if (room == null) return;
 
         if (!client.nickname.equals(room.owner)) {
-            client.send("ERROR|Chỉ chủ phòng mới có thể bắt đầu!");
-            return;
+            client.send("ERROR|Chỉ chủ phòng mới có thể bắt đầu!"); return;
         }
         if (room.players.size() < 2) {
-            client.send("ERROR|Cần ít nhất 2 người chơi!");
-            return;
+            client.send("ERROR|Cần ít nhất 2 người chơi!"); return;
         }
         if (room.gameStarted) {
-            client.send("ERROR|Game đã bắt đầu rồi!");
+            client.send("ERROR|Game đã bắt đầu rồi!"); return;
+        }
+
+        // Kiểm tra tất cả đã sẵn sàng (đặt số bí mật)
+        if (room.readyPlayers.size() < room.players.size()) {
+            int missing = room.players.size() - room.readyPlayers.size();
+            client.send("ERROR|Còn " + missing + " người chưa sẵn sàng!");
             return;
         }
 
         room.gameStarted = true;
         room.activePlayers = new ArrayList<>(room.players);
-        room.secrets = new HashMap<>();
         room.rankings = new ArrayList<>();
         room.currentTurnIndex = 0;
-        room.secretsReady = 0;
+        room.secretsReady = room.players.size(); // đã đặt hết
+        room.readyPlayers = new HashSet<>();
 
         broadcastToRoom(client.currentRoom, "GAME_START|" + room.numDigits);
         broadcastToRoom(client.currentRoom,
-                "ROOM_CHAT_MSG|🎮 Hệ thống|Game bắt đầu! Hãy chọn số bí mật " +
-                        room.numDigits + " chữ số.");
+                "ROOM_CHAT_MSG|🎮 Hệ thống|Game bắt đầu! Chúc mọi người may mắn!");
         log("🎮 Game bắt đầu tại phòng " + client.currentRoom);
+
+        // Bắt đầu lượt ngay — secrets đã có sẵn từ lobby
+        startTurn(room, client.currentRoom);
     }
 
     private synchronized void handleSetSecret(ClientHandler client, String secret) {
         if (client.currentRoom == null) return;
         Room room = rooms.get(client.currentRoom);
-        if (room == null || !room.gameStarted) return;
+        if (room == null) return;
 
         if (secret.length() != room.numDigits || !secret.matches("\\d+")) {
             client.send("ERROR|Số bí mật phải có đúng " + room.numDigits + " chữ số!");
@@ -364,17 +392,24 @@ public class GameServer extends JFrame {
             client.send("ERROR|Số không được có số 0 và không được trùng chữ số!");
             return;
         }
-        room.secrets.put(client.nickname, secret);
-        room.secretsReady++;
-        client.send("SECRET_SET|" + secret);
-        broadcastToRoom(client.currentRoom,
-                "ROOM_CHAT_MSG|🎮 Hệ thống|" + client.nickname + " đã chọn số bí mật ✅");
 
-        if (room.secretsReady == room.activePlayers.size()) {
+        // Lưu số bí mật — cho phép cả trước khi game bắt đầu (giai đoạn lobby)
+        room.secrets.put(client.nickname, secret);
+        client.send("SECRET_SET|" + secret);
+
+        if (room.gameStarted) {
+            // Đang trong game: đếm secretsReady, bắt đầu lượt khi đủ
+            room.secretsReady = (int) room.activePlayers.stream()
+                    .filter(p -> room.secrets.containsKey(p)).count();
             broadcastToRoom(client.currentRoom,
-                    "ROOM_CHAT_MSG|🎮 Hệ thống|Tất cả đã sẵn sàng! Bắt đầu đoán số!");
-            startTurn(room, client.currentRoom);
+                    "ROOM_CHAT_MSG|🎮 Hệ thống|" + client.nickname + " đã chọn số bí mật ✅");
+            if (room.secretsReady == room.activePlayers.size()) {
+                broadcastToRoom(client.currentRoom,
+                        "ROOM_CHAT_MSG|🎮 Hệ thống|Tất cả đã sẵn sàng! Bắt đầu đoán số!");
+                startTurn(room, client.currentRoom);
+            }
         }
+        log("🔒 " + client.nickname + " đặt số bí mật tại phòng " + client.currentRoom);
     }
     private boolean isValidSecret(String secret) {
         if (secret == null || secret.contains("0")) return false;
@@ -632,6 +667,12 @@ public class GameServer extends JFrame {
                         broadcastToRoom(currentRoom, "ROOM_CHAT_MSG|" + nickname + "|" + data);
                     }
                     break;
+                case "PLAYER_READY":
+                    handlePlayerReady(this);
+                    break;
+                case "PLAYER_UNREADY":
+                    handlePlayerUnready(this);
+                    break;
                 case "START_GAME":
                     handleStartGame(this);
                     break;
@@ -698,6 +739,7 @@ public class GameServer extends JFrame {
         List<String> rankings = new ArrayList<>();
         int currentTurnIndex = 0;
         int secretsReady = 0;
+        Set<String> readyPlayers = new HashSet<>(); // lobby ready tracking
 
         Room(String code, String owner, int numDigits) {
             this.code = code;
