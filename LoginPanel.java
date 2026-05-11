@@ -16,6 +16,7 @@ public class LoginPanel extends JPanel {
     private JTextField radminNickJoinField;   // nickname on join screen (Radmin)
     private JTextField radminCodeField;       // room code for Radmin join
     private JTextField radminIpJoinField;     // Radmin IP on join screen
+    private JTextField lanIpDisplayField;     // visible IP field on LAN screen
 
     private JPanel     cardArea;
     private CardLayout cardAreaLayout;
@@ -45,6 +46,11 @@ public class LoginPanel extends JPanel {
 
     public void setServerIp(String ip) {
         if (serverIpField != null) serverIpField.setText(ip);
+        if (lanIpDisplayField != null) {
+            lanIpDisplayField.setText(ip);
+            // Highlight để user thấy đã tự điền
+            lanIpDisplayField.setForeground(GOLD);
+        }
     }
 
     /** Trả về IP Radmin từ màn hình đang hiển thị */
@@ -117,11 +123,11 @@ public class LoginPanel extends JPanel {
         JPanel p = centeredColumn();
 
         p.add(Box.createVerticalGlue());
-        p.add(menuBtn(" Tạo Phòng (Host)",   FROST,  "radmin_create"));
+        p.add(menuBtn("  🖥  Tạo Phòng (Host)",   FROST,  "radmin_create"));
         p.add(vgap(14));
-        p.add(menuBtn(" Vào Phòng (Join by code)",    ORANGE, "radmin_join"));
+        p.add(menuBtn("  🎮  Vào Phòng (Join)",    ORANGE, "radmin_join"));
         p.add(vgap(14));
-        p.add(menuBtn(" Chơi Mạng LAN",        PURPLE, "local"));
+        p.add(menuBtn("  📡  Chơi Mạng LAN",        PURPLE, "local"));
         p.add(Box.createVerticalGlue());
 
         // Chú thích Radmin
@@ -196,8 +202,10 @@ public class LoginPanel extends JPanel {
         p.add(vgap(14));
         p.add(fieldLbl("Server IP  (để trống = tự tìm)"));
         p.add(vgap(6));
-        JTextField ipField = styledField("auto");
-        p.add(ipField);
+        lanIpDisplayField = styledField("auto");
+        // Reset màu khi user tự gõ
+        lanIpDisplayField.addCaretListener(e -> lanIpDisplayField.setForeground(new Color(0xEC, 0xEF, 0xF4)));
+        p.add(lanIpDisplayField);
         p.add(vgap(20));
 
         // Two-button row
@@ -210,13 +218,15 @@ public class LoginPanel extends JPanel {
         findBtn.addActionListener(e -> {
             if (validateNick(nickLocalField)) {
                 serverIpField.setText("auto");
+                lanIpDisplayField.setText("Đang tìm...");
+                lanIpDisplayField.setForeground(SUBTEXT);
                 client.discoverServer();
             }
         });
         JButton connBtn = tinyBtn("Kết nối  →", FROST);
         connBtn.addActionListener(e -> {
             if (validateNick(nickLocalField)) {
-                serverIpField.setText(ipField.getText().trim());
+                serverIpField.setText(lanIpDisplayField.getText().trim());
                 client.connectToServer();
             }
         });

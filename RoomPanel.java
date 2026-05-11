@@ -29,6 +29,16 @@ public class RoomPanel extends JPanel {
     private JButton    startBtn, setSecretBtn;
     private JTextField secretField;
 
+    // ready system
+    private JLabel     mySecretDisplayLabel; // hiển thị "Số của bạn: XXXX" trong game
+    private JLabel     readyCountLabel;       // "X/Y sẵn sàng"
+    private JLabel     readyDialogCountLabel; // label trong dialog
+    private JButton    dialogStartBtn;        // nút Bắt đầu/Sẵn sàng trong dialog
+    private boolean    isReady     = false;
+    private boolean    isOwner     = false;
+    private int        readyCount  = 0;
+    private int        totalCount  = 0;
+
     // recent history (header + up to 2 rows)
     private JPanel     historyPanel;
     private JScrollPane histScrollPane;
@@ -57,6 +67,7 @@ public class RoomPanel extends JPanel {
     private JDialog            trackerDialog;
     private NumberTrackerPanel trackerPanel;
     private JDialog gameOverDialog;
+    private JDialog pendingSecretDialog; // dialog chuẩn bị, đóng khi game bắt đầu
 
     // data
     private List<GuessEntry> guessHistory  = new ArrayList<>();
@@ -202,41 +213,399 @@ public class RoomPanel extends JPanel {
     }
 
     private JPanel buildBottomBar() {
-        JPanel bar = new JPanel(new FlowLayout(FlowLayout.CENTER, 8, 6));
+        JPanel bar = new JPanel(new BorderLayout(0, 0));
         bar.setBackground(PANEL_BG);
         bar.setBorder(BorderFactory.createMatteBorder(1, 0, 0, 0, ENTRY_BG));
 
-        startBtn = mkBtn("[ Bắt đầu ]", GREEN_C, Color.WHITE, 12);
-        startBtn.addActionListener(e -> client.sendMsg("START_GAME|"));
-        bar.add(startBtn);
+        JPanel row = new JPanel(new BorderLayout(8, 0));
+        row.setBackground(ENTRY_BG);
+        row.setBorder(BorderFactory.createEmptyBorder(6, 14, 6, 14));
 
-        bar.add(lbl("Số bí mật:", 11, Font.PLAIN, SUBTEXT));
+        // Trái: số bí mật của mình
+        mySecretDisplayLabel = lbl("Số của bạn: ---", 12, Font.BOLD, GOLD);
+        row.add(mySecretDisplayLabel, BorderLayout.WEST);
 
-        secretField = new JTextField(8);
-        secretField.setBackground(ENTRY_BG);
-        secretField.setForeground(TEXT);
-        secretField.setCaretColor(ACCENT);
-        secretField.setFont(new Font("Courier New", Font.BOLD, 14));
-        secretField.setBorder(BorderFactory.createCompoundBorder(
-                BorderFactory.createLineBorder(ACCENT, 1),
-                BorderFactory.createEmptyBorder(4, 8, 4, 8)));
-        bar.add(secretField);
+        // Giữa: HOST: nickname (thay cho đếm sẵn sàng)
+        readyCountLabel = lbl("", 11, Font.PLAIN, SUBTEXT);
+        readyCountLabel.setHorizontalAlignment(SwingConstants.CENTER);
+        row.add(readyCountLabel, BorderLayout.CENTER);
 
-        setSecretBtn = mkBtn("[ Đặt ]", ENTRY_BG, TEXT, 12);
-        setSecretBtn.setEnabled(false);
-        setSecretBtn.addActionListener(e -> {
-            String s = secretField.getText().trim();
-            if (!s.isEmpty()) client.sendMsg("SET_SECRET|" + s);
-        });
-        bar.add(setSecretBtn);
-
-        JButton leaveBtn = mkBtn("[ Rời ]", ACCENT, Color.WHITE, 12);
+        // Phải: chỉ nút Rời
+        JButton leaveBtn = mkBtn("[ Rời ]", ACCENT, Color.WHITE, 11);
         leaveBtn.addActionListener(e -> client.sendMsg("LEAVE_ROOM|"));
-        bar.add(leaveBtn);
+        row.add(leaveBtn, BorderLayout.EAST);
+
+        bar.add(row, BorderLayout.CENTER);
+
+        // Hidden fields giữ để không lỗi compile
+        startBtn     = mkBtn("", ENTRY_BG, TEXT, 11); startBtn.setVisible(false);
+        secretField  = new JTextField(1);              secretField.setVisible(false);
+        setSecretBtn = mkBtn("", ENTRY_BG, TEXT, 11); setSecretBtn.setVisible(false);
 
         return bar;
     }
 
+    /** Hiển thị "HOST: nickname" ở bottom bar khi vào phòng */
+    public void setHostDisplay(String hostNick) {
+        if (readyCountLabel != null)
+            readyCountLabel.setText("HOST: " + hostNick);
+    }
+
+    /** Chỉ set flag, không hiện dialog — gọi khi ROOM_CREATED/JOINED */
+    public void setIsOwner(boolean owner) {
+        this.isOwner = owner;
+        this.isReady = false;
+    }
+
+    /** Gọi khi vào phòng — hiện dialog ngay (dùng cho setOwner cũ nếu cần) */
+    public void setOwner(boolean owner) {
+        this.isOwner = owner;
+        this.isReady = false;
+        // Không hiện dialog ở đây — chờ GAME_START với numDigits đúng
+    }
+
+    /** Cập nhật đếm sẵn sàng và trạng thái nút trong dialog */
+    public void updateReadyStatus(int ready, int total) {
+        SwingUtilities.invokeLater(() -> {
+            // Chỉ cập nhật label trong dialog sẵn sàng
+            if (readyDialogCountLabel != null)
+                readyDialogCountLabel.setText(ready + "/" + total + " người sẵn sàng");
+            // Bật nút Bắt đầu trong dialog khi tất cả đã sẵn sàng
+            if (isOwner && dialogStartBtn != null) {
+                boolean allReady = total > 1 && ready >= total;
+                dialogStartBtn.setEnabled(allReady);
+                dialogStartBtn.setBackground(allReady ? GREEN_C : new Color(0x2A, 0x3A, 0x2A));
+                dialogStartBtn.setForeground(allReady ? Color.WHITE : Color.GRAY);
+                dialogStartBtn.setText(allReady ? "▶  Bắt đầu!" : "[ Chờ mọi người sẵn sàng ]");
+            }
+        });
+    }
+
+    /** Toast 3 giây góc trên phải: "X đã sẵn sàng!" */
+    public void showReadyToast(String playerName) {
+        SwingUtilities.invokeLater(() -> {
+            Window owner = SwingUtilities.getWindowAncestor(this);
+            if (owner == null) return;
+            JWindow toast = new JWindow(owner);
+            JPanel tp = new JPanel(new BorderLayout());
+            tp.setBackground(new Color(0x12, 0x30, 0x12));
+            tp.setBorder(BorderFactory.createCompoundBorder(
+                    BorderFactory.createLineBorder(GREEN_C, 2),
+                    BorderFactory.createEmptyBorder(8, 16, 8, 16)));
+            JLabel msg = new JLabel("✔  " + playerName + " đã sẵn sàng!");
+            msg.setFont(new Font("Courier New", Font.BOLD, 12));
+            msg.setForeground(GREEN_C);
+            tp.add(msg);
+            toast.setContentPane(tp);
+            toast.pack();
+            try {
+                Point loc = owner.getLocationOnScreen();
+                toast.setLocation(loc.x + owner.getWidth() - toast.getWidth() - 14, loc.y + 44);
+            } catch (Exception ignored) {}
+            toast.setVisible(true);
+            new javax.swing.Timer(3000, ev -> toast.dispose()) {{ setRepeats(false); start(); }};
+        });
+    }
+
+
+    public void setMySecretDisplay(String secret) {
+        if (mySecretDisplayLabel != null)
+            mySecretDisplayLabel.setText("Số của bạn: " + secret);
+    }
+
+    /** Đóng dialog sẵn sàng/đặt số */
+    public void closeSecretDialog() {
+        if (pendingSecretDialog != null) {
+            pendingSecretDialog.dispose();
+            pendingSecretDialog = null;
+        }
+        readyDialogCountLabel = null;
+        dialogStartBtn = null;
+    }
+
+    /** Alias dùng bởi GameClient */
+    public void closeReadyDialog() { closeSecretDialog(); }
+
+    /** Hiện dialog sẵn sàng ngay khi vào phòng
+     *  owner=true → host (có nút Bắt đầu)
+     *  owner=false → guest (có nút Sẵn sàng) */
+    public void showReadyDialog(boolean ownerFlag, int digits) {
+        this.isOwner   = ownerFlag;
+        this.numDigits = digits;
+        closeSecretDialog(); // đóng dialog cũ nếu có
+        SwingUtilities.invokeLater(this::showSetSecretAndReadyDialog);
+    }
+
+    // ── Dialog đặt số + Sẵn sàng (hiện ngay khi vào phòng) ───────────────
+    public void showSetSecretAndReadyDialog() {
+        Window owner = SwingUtilities.getWindowAncestor(this);
+        JDialog dlg = new JDialog((Frame) owner, "Chuẩn bị", false);
+        dlg.setUndecorated(true);
+        dlg.setSize(340, isOwner ? 310 : 290);
+        dlg.setLocationRelativeTo(this);
+        dlg.setAlwaysOnTop(true);
+
+        JPanel root = new JPanel(new BorderLayout());
+        root.setBackground(PANEL_BG);
+        root.setBorder(BorderFactory.createLineBorder(GOLD, 2));
+
+        // ── Header ────────────────────────────────────────────────────────
+        JPanel hdr = new JPanel(new BorderLayout());
+        hdr.setBackground(new Color(0x25, 0x18, 0x00));
+        hdr.setBorder(BorderFactory.createEmptyBorder(10, 16, 10, 16));
+        hdr.add(lbl("Đặt số bí mật", 13, Font.BOLD, GOLD), BorderLayout.WEST);
+        JLabel subHdr = isOwner
+                ? lbl("Chờ tất cả sẵn sàng để bắt đầu", 10, Font.PLAIN, SUBTEXT)
+                : lbl("Nhập số rồi nhấn Sẵn sàng", 10, Font.PLAIN, SUBTEXT);
+        hdr.add(subHdr, BorderLayout.EAST);
+        root.add(hdr, BorderLayout.NORTH);
+
+        // ── Body ──────────────────────────────────────────────────────────
+        JPanel body = new JPanel();
+        body.setLayout(new BoxLayout(body, BoxLayout.Y_AXIS));
+        body.setBackground(PANEL_BG);
+        body.setBorder(BorderFactory.createEmptyBorder(14, 24, 8, 24));
+
+        JLabel hint = lbl(numDigits + " chữ số (1–9), không trùng", 11, Font.PLAIN, SUBTEXT);
+        hint.setAlignmentX(CENTER_ALIGNMENT);
+        body.add(hint);
+        body.add(Box.createVerticalStrut(10));
+
+        JTextField secIn = new JTextField(10);
+        secIn.setBackground(ENTRY_BG);
+        secIn.setForeground(TEXT);
+        secIn.setCaretColor(GOLD);
+        secIn.setFont(new Font("Courier New", Font.BOLD, 26));
+        secIn.setHorizontalAlignment(JTextField.CENTER);
+        secIn.setBorder(BorderFactory.createCompoundBorder(
+                BorderFactory.createLineBorder(GOLD, 2),
+                BorderFactory.createEmptyBorder(8, 12, 8, 12)));
+        secIn.setMaximumSize(new Dimension(250, 58));
+        secIn.setAlignmentX(CENTER_ALIGNMENT);
+        body.add(secIn);
+        body.add(Box.createVerticalStrut(8));
+
+        JLabel errLbl = lbl("", 10, Font.PLAIN, ACCENT);
+        errLbl.setAlignmentX(CENTER_ALIGNMENT);
+        body.add(errLbl);
+        body.add(Box.createVerticalStrut(6));
+
+        // Đếm sẵn sàng
+        readyDialogCountLabel = lbl("0/0 người sẵn sàng", 11, Font.BOLD, SUBTEXT);
+        readyDialogCountLabel.setAlignmentX(CENTER_ALIGNMENT);
+        body.add(readyDialogCountLabel);
+
+        root.add(body, BorderLayout.CENTER);
+
+        // ── Footer ────────────────────────────────────────────────────────
+        JPanel footer = new JPanel(new BorderLayout(0, 6));
+        footer.setBackground(new Color(0x10, 0x1A, 0x28));
+        footer.setBorder(BorderFactory.createEmptyBorder(8, 12, 8, 12));
+
+        if (isOwner) {
+            // Host: nút "Bắt đầu" (disabled cho đến khi tất cả sẵn sàng)
+            dialogStartBtn = new JButton("[ Bắt đầu ]");
+            dialogStartBtn.setFont(new Font("Courier New", Font.BOLD, 13));
+            dialogStartBtn.setBackground(new Color(0x2A, 0x3A, 0x2A));
+            dialogStartBtn.setForeground(Color.GRAY);
+            dialogStartBtn.setFocusPainted(false);
+            dialogStartBtn.setBorderPainted(false);
+            dialogStartBtn.setEnabled(false);
+            dialogStartBtn.setPreferredSize(new Dimension(0, 40));
+            dialogStartBtn.addActionListener(e -> {
+                // Chỉ gửi lệnh, dialog sẽ tự đóng khi nhận GAME_START từ server
+                dialogStartBtn.setEnabled(false);
+                dialogStartBtn.setText("Đang bắt đầu...");
+                client.sendMsg("START_GAME|");
+            });
+            footer.add(dialogStartBtn, BorderLayout.CENTER);
+
+            // Host cũng cần nút xác nhận số bí mật (riêng)
+            JButton hostConfBtn = new JButton("Xác nhận số bí mật  ✔");
+            hostConfBtn.setFont(new Font("Courier New", Font.BOLD, 12));
+            hostConfBtn.setBackground(new Color(0x5E, 0x81, 0xAC));
+            hostConfBtn.setForeground(Color.WHITE);
+            hostConfBtn.setFocusPainted(false);
+            hostConfBtn.setBorderPainted(false);
+            hostConfBtn.setPreferredSize(new Dimension(0, 36));
+            hostConfBtn.setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR));
+            footer.add(hostConfBtn, BorderLayout.NORTH);
+
+            Runnable submitHost = () -> {
+                String s = secIn.getText().trim();
+                if (s.length() != numDigits || !s.matches("[1-9]+")) {
+                    errLbl.setForeground(ACCENT); errLbl.setText("Số không hợp lệ!"); return; }
+                Set<Character> seen = new HashSet<>();
+                for (char c : s.toCharArray()) if (!seen.add(c)) {
+                    errLbl.setForeground(ACCENT); errLbl.setText("Chữ số không được trùng!"); return; }
+                client.sendMsg("SET_SECRET|" + s);
+                client.sendMsg("PLAYER_READY|"); // host cũng gửi sẵn sàng để đếm
+                mySecretDisplayLabel.setText("Số của bạn: " + s);
+                secIn.setEditable(false);
+                secIn.setForeground(GREEN_C);
+                hostConfBtn.setEnabled(false);
+                subHdr.setText("Chờ người chơi sẵn sàng...");
+                errLbl.setForeground(GREEN_C); errLbl.setText("✔ Đã đặt số — chờ mọi người sẵn sàng");
+                // KHÔNG đóng dialog — chờ host tự bấm Bắt đầu
+            };
+            hostConfBtn.addActionListener(e -> submitHost.run());
+            secIn.addActionListener(e -> submitHost.run());
+
+        } else {
+            // Guest: nút "Sẵn sàng" + nút "Hủy sẵn sàng"
+            JButton readyBtn = new JButton("✔  Sẵn sàng");
+            readyBtn.setFont(new Font("Courier New", Font.BOLD, 13));
+            readyBtn.setBackground(GREEN_C);
+            readyBtn.setForeground(Color.WHITE);
+            readyBtn.setFocusPainted(false);
+            readyBtn.setBorderPainted(false);
+            readyBtn.setPreferredSize(new Dimension(0, 40));
+            readyBtn.setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR));
+            dialogStartBtn = readyBtn; // ref để enable/disable
+
+            JButton cancelBtn = mkBtn("Hủy sẵn sàng", ACCENT, Color.WHITE, 12);
+            cancelBtn.setPreferredSize(new Dimension(0, 34));
+            cancelBtn.setVisible(false);
+
+            Runnable submitGuest = () -> {
+                String s = secIn.getText().trim();
+                if (s.length() != numDigits || !s.matches("[1-9]+")) {
+                    errLbl.setForeground(ACCENT); errLbl.setText("Số không hợp lệ!"); return; }
+                Set<Character> seen = new HashSet<>();
+                for (char c : s.toCharArray()) if (!seen.add(c)) {
+                    errLbl.setForeground(ACCENT); errLbl.setText("Chữ số không được trùng!"); return; }
+                client.sendMsg("SET_SECRET|" + s);
+                client.sendMsg("PLAYER_READY|");
+                mySecretDisplayLabel.setText("Số của bạn: " + s);
+                secIn.setEditable(false);
+                secIn.setForeground(GREEN_C);
+                readyBtn.setVisible(false);
+                cancelBtn.setVisible(true);
+                subHdr.setText("Đang chờ host bắt đầu...");
+                subHdr.setForeground(GREEN_C);
+                errLbl.setForeground(GREEN_C); errLbl.setText("✔ Đã sẵn sàng!");
+                isReady = true;
+            };
+            readyBtn.addActionListener(e -> submitGuest.run());
+            secIn.addActionListener(e -> submitGuest.run());
+
+            cancelBtn.addActionListener(e -> {
+                client.sendMsg("PLAYER_UNREADY|");
+                isReady = false;
+                secIn.setEditable(true);
+                secIn.setForeground(TEXT);
+                readyBtn.setVisible(true);
+                cancelBtn.setVisible(false);
+                subHdr.setText("Nhập số rồi nhấn Sẵn sàng");
+                subHdr.setForeground(SUBTEXT);
+                errLbl.setText("");
+            });
+
+            footer.add(readyBtn,  BorderLayout.CENTER);
+            footer.add(cancelBtn, BorderLayout.SOUTH);
+        }
+
+        root.add(footer, BorderLayout.SOUTH);
+
+        this.pendingSecretDialog = dlg;
+        dlg.setContentPane(root);
+        dlg.setVisible(true);
+        secIn.requestFocusInWindow();
+    }
+
+    /** Hiện dialog đặt số bí mật đơn giản — gọi sau GAME_START */
+    public void showSetSecretDialog() {
+        SwingUtilities.invokeLater(() -> {
+            closeSecretDialog(); // đóng dialog lobby nếu còn mở
+            Window owner = SwingUtilities.getWindowAncestor(this);
+            JDialog dlg = new JDialog((Frame) owner, "Đặt số bí mật", false);
+            dlg.setUndecorated(true);
+            dlg.setSize(320, 240);
+            dlg.setLocationRelativeTo(this);
+            dlg.setAlwaysOnTop(true);
+
+            JPanel root = new JPanel(new BorderLayout());
+            root.setBackground(PANEL_BG);
+            root.setBorder(BorderFactory.createLineBorder(GOLD, 2));
+
+            // Header
+            JPanel hdr = new JPanel(new BorderLayout());
+            hdr.setBackground(new Color(0x25, 0x18, 0x00));
+            hdr.setBorder(BorderFactory.createEmptyBorder(10, 16, 10, 16));
+            hdr.add(lbl("Đặt số bí mật", 13, Font.BOLD, GOLD), BorderLayout.WEST);
+            JLabel subHdr = lbl("Nhập " + numDigits + " chữ số, không trùng, không có 0", 10, Font.PLAIN, SUBTEXT);
+            hdr.add(subHdr, BorderLayout.SOUTH);
+            root.add(hdr, BorderLayout.NORTH);
+
+            // Body
+            JPanel body = new JPanel();
+            body.setLayout(new BoxLayout(body, BoxLayout.Y_AXIS));
+            body.setBackground(PANEL_BG);
+            body.setBorder(BorderFactory.createEmptyBorder(18, 24, 14, 24));
+
+            JTextField secIn = new JTextField(10);
+            secIn.setBackground(ENTRY_BG);
+            secIn.setForeground(GOLD);
+            secIn.setCaretColor(GOLD);
+            secIn.setFont(new Font("Courier New", Font.BOLD, 28));
+            secIn.setHorizontalAlignment(JTextField.CENTER);
+            secIn.setBorder(BorderFactory.createCompoundBorder(
+                    BorderFactory.createLineBorder(GOLD, 2),
+                    BorderFactory.createEmptyBorder(8, 12, 8, 12)));
+            secIn.setMaximumSize(new Dimension(260, 62));
+            secIn.setAlignmentX(CENTER_ALIGNMENT);
+            body.add(secIn);
+            body.add(Box.createVerticalStrut(10));
+
+            JLabel errLbl = lbl("", 10, Font.PLAIN, ACCENT);
+            errLbl.setAlignmentX(CENTER_ALIGNMENT);
+            body.add(errLbl);
+            root.add(body, BorderLayout.CENTER);
+
+            // Footer: nút Xác nhận
+            JButton confirmBtn = new JButton("Xác nhận  ✔");
+            confirmBtn.setFont(new Font("Courier New", Font.BOLD, 13));
+            confirmBtn.setBackground(GREEN_C);
+            confirmBtn.setForeground(Color.WHITE);
+            confirmBtn.setFocusPainted(false);
+            confirmBtn.setBorderPainted(false);
+            confirmBtn.setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR));
+            confirmBtn.setPreferredSize(new Dimension(0, 42));
+
+            JPanel footer = new JPanel(new BorderLayout());
+            footer.setBackground(new Color(0x10, 0x1A, 0x28));
+            footer.setBorder(BorderFactory.createMatteBorder(1,0,0,0, ENTRY_BG));
+            footer.setBorder(BorderFactory.createEmptyBorder(6, 12, 6, 12));
+            footer.add(confirmBtn, BorderLayout.CENTER);
+            root.add(footer, BorderLayout.SOUTH);
+
+            Runnable submit = () -> {
+                String s = secIn.getText().trim();
+                if (s.length() != numDigits) { errLbl.setText("Cần đúng " + numDigits + " chữ số!"); return; }
+                if (!s.matches("[1-9]+"))    { errLbl.setText("Chỉ số 1-9, không có số 0!"); return; }
+                Set<Character> seen = new HashSet<>();
+                for (char c : s.toCharArray()) if (!seen.add(c)) { errLbl.setText("Chữ số không được trùng!"); return; }
+                // Gửi lên server
+                client.sendMsg("SET_SECRET|" + s);
+                // Cập nhật UI ngay
+                mySecretDisplayLabel.setText("Số của bạn: " + s);
+                secIn.setEditable(false);
+                secIn.setForeground(GREEN_C);
+                errLbl.setForeground(GREEN_C);
+                errLbl.setText("✔ Đã gửi, chờ người khác...");
+                confirmBtn.setEnabled(false);
+                // Dialog sẽ bị đóng khi nhận SECRET_SET từ server
+            };
+
+            confirmBtn.addActionListener(e -> submit.run());
+            secIn.addActionListener(e -> submit.run());
+
+            this.pendingSecretDialog = dlg;
+            dlg.setContentPane(root);
+            dlg.setVisible(true);
+            secIn.requestFocusInWindow();
+        });
+    }
     // ══════════════════════════════════════════════════════════════════════
     //  CHAT
     // ══════════════════════════════════════════════════════════════════════
@@ -712,6 +1081,10 @@ public class RoomPanel extends JPanel {
         setGuessEnabled(false);
         setSecretEditable(true);
         secretField.setText("");
+        if (mySecretDisplayLabel != null) mySecretDisplayLabel.setText("Số của bạn: ---");
+        if (readyCountLabel != null) readyCountLabel.setText("");
+        isReady = false;
+        closeSecretDialog();
 
         // Reset label đối thủ
         opponentLabel.setText("Đang chờ đối thủ...");
